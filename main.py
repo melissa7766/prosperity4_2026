@@ -20,16 +20,38 @@ class Trader:
             order_depth: OrderDepth = state.order_depths[product]
             orders: List[Order] = []
             
-            current_position = state.position[product]
+            if product not in state.own_trades.keys():
+                #initialize own trade history, can use to calc moving average
+#idk how to do this bruh
 
-            past_average_price = state.own_trades[product].price / state.own_trades[product].quantity
-            current_average_price = state.observations.conversionObservations[product].bidPrice / state.observations.conversionObservations[product].quantity
 
-            acceptable_price =   # Participant should calculate this value
+            best_bid = max(order_depth.buy_orders.keys())
+            best_ask = min(order_depth.sell_orders.keys())
+            
+            current_position = state.position.get(product, 0)
+
+
+            #probs not good method to calc average price
+            current_mid_price = (best_bid + best_ask) / 2
+                   #fix these conditions later
+            
+            if product not in history:
+                history[product] = []
+
+            history[product].append(current_price)
+
+            # keep only last 10 prices
+            history[product] = history[product][-10:]
+
+            # moving average
+            acceptable_price = sum(history[product]) / len(history[product])
 
 
 
             
+                   
+            if current_position > 0 and current_mid_price > #something: # expecting that we are buying low, selling high
+                acceptable_price = 
         
             if len(order_depth.sell_orders) != 0:
                 best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
