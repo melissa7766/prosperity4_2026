@@ -1,9 +1,6 @@
-
 from datamodel import OrderDepth, UserId, TradingState, Order
 from typing import List
-import string
-
-
+import json
 
 class Trader:
 
@@ -11,62 +8,60 @@ class Trader:
         return 15
     
     def run(self, state: TradingState):
-        """Only method required. It takes all buy and sell orders for all
-        symbols as an input, and outputs a list of orders to be sent."""
-
-        # Orders to be placed on exchange matching engine
+        history = json.loads(state.traderData) if state.traderData else {}
         result = {}
+        
+        print("traderData: " + state.traderData)
+        print("Observations: " + str(state.observations))
+
         for product in state.order_depths:
             order_depth: OrderDepth = state.order_depths[product]
             orders: List[Order] = []
-            
-            if product not in state.own_trades.keys():
-                #initialize own trade history, can use to calc moving average
-#idk how to do this bruh
-
-
-            best_bid = max(order_depth.buy_orders.keys())
-            best_ask = min(order_depth.sell_orders.keys())
-            
             current_position = state.position.get(product, 0)
 
+            if product == "EMERALDS":
+                fair_price = 10000
+                max_position = 80
+            elif product == "TOMATOES":
+                fair_price = 5000
+                max_position = 80
+            else:
+                result[product] = orders
+                continue
 
-            #probs not good method to calc average price
-            current_mid_price = (best_bid + best_ask) / 2
-                   #fix these conditions later
-            
+            print("Buy Order depth : " + str(len(order_depth.buy_orders)) +
+                  ", Sell order depth : " + str(len(order_depth.sell_orders)))
+
+            # BUY
+            if len(order_depth.sell_orders) != 0:
+                best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
+                if int(best_ask) < fair_price:
+                    buyable = max_position - current_position
+                    buy_qty = min(-best_ask_amount, buyable)
+
+                    if buy_qty > 0:
+                        print("BUY", str(buy_qty) + "x", best_ask)
+                        orders.append(Order(product, best_ask, buy_qty))
+
+            # SELL
+            if len(order_depth.buy_orders) != 0:
+                best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
+                if int(best_bid) > fair_price:
+                    sellable = max_position + current_position
+                    sell_qty = min(best_bid_amount, sellable)
+
+                    if sell_qty > 0:
+                        print("SELL", str(sell_qty) + "x", best_bid)
+                        orders.append(Order(product, best_bid, -sell_qty))
+
+            result[product] = orders
+
             if product not in history:
                 history[product] = []
 
-            history[product].append(current_price)
-
-            # keep only last 10 prices
-            history[product] = history[product][-10:]
-
-            # moving average
-            acceptable_price = sum(history[product]) / len(history[product])
-
-
-
-            
-                   
-            if current_position > 0 and current_mid_price > #something: # expecting that we are buying low, selling high
-                acceptable_price = 
-        
             if len(order_depth.sell_orders) != 0:
-                best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
-                if int(best_ask) < acceptable_price:
-
-                    orders.append(Order(product, best_ask, -best_ask_amount))
+                history[product].append(best_ask)
     
-            if len(order_depth.buy_orders) != 0:
-                best_bid, best_bid_amount = list[tuple[int, int]](order_depth.buy_orders.items())[0]
-                if int(best_bid) > acceptable_price:
-    
-                    orders.append(Order(product, best_bid, -best_bid_amount))
-            
-            result[product] = orders
-    
-        traderData = ""  # No state needed - we check position directly
+        traderData = json.dumps(history)
         conversions = 0
         return result, conversions, traderData
