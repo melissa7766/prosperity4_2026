@@ -4,6 +4,13 @@ import json
 
 class Trader:
 
+    position_limits={
+        "EMERALDS":80,
+        "TOMATOES":80.
+    }
+    emeralf_fair_price = 10000
+    moving_avg_window = 20
+
     def bid(self):
         return 15
     
@@ -15,26 +22,49 @@ class Trader:
         print("Observations: " + str(state.observations))
 
         for product in state.order_depths:
+
+            if product not in self.position_limits:
+                continue
+
             order_depth: OrderDepth = state.order_depths[product]
             orders: List[Order] = []
             current_position = state.position.get(product, 0)
 
-            if product == "EMERALDS":
-                fair_price = 10000
-                max_position = 80
-            elif product == "TOMATOES":
-                fair_price = 5000
-                max_position = 80
-            else:
-                result[product] = orders
-                continue
+            max_position = self.position_limits[product]
 
-            print("Buy Order depth : " + str(len(order_depth.buy_orders)) +
-                  ", Sell order depth : " + str(len(order_depth.sell_orders)))
+            if product not in history:
+                history[product] = []
 
-            # BUY
             if len(order_depth.sell_orders) != 0:
                 best_ask, best_ask_amount = list(order_depth.sell_orders.items())[0]
+                history[product].append(best_ask)
+            else:
+                best_ask = None
+                best_ask_amount = None
+            
+            if len(order_depth.buy_orders) != 0:
+                best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
+            else:
+                best_bid = None
+                best_bid_amount = None
+
+
+            if product == "EMERALDS":
+                fair_price = self.emerald_fair_price
+
+            elif product == "TOMATOES":
+                prices = history[product]
+                if len(prices) >= self.moving_avg_window:
+                    fair_price = sum(prices[-self.moving_avg_window:])/self.moving_avg_window
+                elif len(prices)>0:
+                    fair_price = sum(prices)/len(prices)
+                else:
+                    result[product] = orders
+                    continue
+          
+
+            # BUY
+            if best_ask is not None:
                 if int(best_ask) < fair_price:
                     buyable = max_position - current_position
                     buy_qty = min(-best_ask_amount, buyable)
@@ -44,8 +74,7 @@ class Trader:
                         orders.append(Order(product, best_ask, buy_qty))
 
             # SELL
-            if len(order_depth.buy_orders) != 0:
-                best_bid, best_bid_amount = list(order_depth.buy_orders.items())[0]
+            if best_bid is not None:
                 if int(best_bid) > fair_price:
                     sellable = max_position + current_position
                     sell_qty = min(best_bid_amount, sellable)
@@ -56,11 +85,11 @@ class Trader:
 
             result[product] = orders
 
-            if product not in history:
-                history[product] = []
+            if orders:
+                print(f"{product}: sending {orders}")
+            result[product] = orders
 
-            if len(order_depth.sell_orders) != 0:
-                history[product].append(best_ask)
+
     
         traderData = json.dumps(history)
         conversions = 0
