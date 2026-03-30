@@ -90,7 +90,7 @@ class Trader:
                             orders.append(Order(product, best_ask, qty))
 
                     if pos < limit:
-                        orders.append(Order(product, int(fair) - 2, min(5, limit - pos)))
+                        orders.append(Order(product, int(fair) - 2, min(15, limit - pos)))
 
                 elif slope < -0.5 and trend < 0:
                     if best_bid and best_bid > fair - 1:
@@ -99,15 +99,15 @@ class Trader:
                             orders.append(Order(product, best_bid, -qty))
 
                     if pos > -limit:
-                        orders.append(Order(product, int(fair) + 2, -min(5, limit + pos)))
+                        orders.append(Order(product, int(fair) + 2, -min(15, limit + pos)))
 
                 else:
                     if best_ask and best_ask < fair - 1:
-                        qty = min(-sells[best_ask], limit - pos, 10)
+                        qty = min(-sells[best_ask], limit - pos, 25)
                         if qty > 0:
                             orders.append(Order(product, best_ask, qty))
                     if best_bid and best_bid > fair + 1:
-                        qty = min(buys[best_bid], limit + pos, 10)
+                        qty = min(buys[best_bid], limit + pos, 25)
                         if qty > 0:
                             orders.append(Order(product, best_bid, -qty))
 
