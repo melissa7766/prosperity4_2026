@@ -3,8 +3,8 @@ from typing import List
 import json
 
 class Trader:
-    POSITION_LIMITS = {"EMERALDS": 80, "TOMATOES": 80}
-    EMERALD_FAIR = 10000
+    POSITION_LIMITS = {"INTARIAN_PEPPER_ROOT": 80, "ASH_COATED_OSMIUM": 80}
+    INTARIAN_PEPPER_ROOT_FAIR = 10000
     SPREAD = 1  
 
     def run(self, state: TradingState):
@@ -36,8 +36,8 @@ class Trader:
             mids = history[product]["mids"]
 
             #market making
-            if product == "EMERALDS":
-                fair = self.EMERALD_FAIR
+            if product == "INTARIAN_PEPPER_ROOT":
+                fair = self.INTARIAN_PEPPER_ROOT_FAIR
 
                 if best_ask is not None and best_ask < fair:
                     qty = min(-sells[best_ask], limit - pos)
@@ -64,7 +64,7 @@ class Trader:
                     orders.append(Order(product, my_ask, -ask_qty))
 
 
-            elif product == "TOMATOES":
+            elif product == "ASH_COATED_OSMIUM":
                 if len(mids) < 10:
                     result[product] = orders
                     continue
