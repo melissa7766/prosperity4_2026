@@ -21,20 +21,27 @@ POSITION_LIMITS: Dict[str, int] = {
 
 TRADE_UNDERLYING = True
 TRADE_OPTIONS    = True
-TRADE_HYDROGEL   = True
-
 UNDERLYING       = "VELVETFRUIT_EXTRACT"
 ACTIVE_STRIKES   = []
 
-
-HG_FAIR        = 9991
-HG_TAKE_EDGE   = 26
-HG_TAKE_SIZE   = 20
-HG_POST_EDGE   = 8
-HG_POST_SIZE   = 20
-HG_SKEW_DIV    = 40
-
 # ── VFX fair price ────────────────────────────────────────
+#
+#   fair = ANCHOR_WEIGHT * ANCHOR
+#        + (1 - ANCHOR_WEIGHT) * ema
+#        + IMBALANCE_K * imbalance
+#
+#   ANCHOR       — stable mean from historical data (~5262).
+#                  Adjust if VFX drifts materially day-to-day.
+#   ANCHOR_WEIGHT — how hard fair is pulled back to anchor.
+#                   1.0 = pure anchor; 0.0 = pure EMA.
+#                   0.6 keeps a gentle EMA drift while anchoring.
+#   EMA_ALPHA    — EMA speed. Only matters when ANCHOR_WEIGHT < 1.
+#                  Higher = more responsive, more noise.
+#   IMBALANCE_K  — how many ticks to shift fair per unit of
+#                   order-book imbalance. Range [-1, 1].
+#                   2.0 means ±2 tick shift at max imbalance.
+#   IMBALANCE_CAP — clamps the imbalance shift (ticks).
+
 VE_ANCHOR        = 5262.0
 VE_ANCHOR_WEIGHT = 0.6
 VE_EMA_ALPHA     = 0.08
@@ -42,6 +49,15 @@ VE_IMBALANCE_K   = 2.0
 VE_IMBALANCE_CAP = 2.0
 
 # ── VFX order placement ───────────────────────────────────
+#
+#   VE_EDGE  — min gap between fair and market price to TAKE.
+#   VE_SIZE  — contracts per market order.
+#   POST_EDGE — offset from fair to post passive limit orders.
+#   POST_SIZE — contracts per passive order.
+#
+#   Passive orders earn the spread; market orders pay it.
+#   With a good fair price, passive posting is the main edge.
+
 VE_EDGE      = 7
 VE_SIZE      = 20
 VE_POST_EDGE = 1
@@ -51,7 +67,7 @@ VE_POST_SIZE = 20
 OPTION_EDGE         = 1.2
 OPTION_SIZE         = 25
 OPTION_MAX_POSITION = 150
-SIGMA               = 0.0140
+SIGMA               = 0.0140   # live TTE=5 IV
 
 DAY_LENGTH   = 1_000_000.0
 STARTING_TTE = 5.0
@@ -81,17 +97,6 @@ class Trader:
         result: Dict[str, List[Order]] = {}
         trader_data = self.load_trader_data(state.traderData)
 
-        # ── HYDROGEL_PACK ─────────────────────────────────
-        if TRADE_HYDROGEL:
-            od = state.order_depths.get("HYDROGEL_PACK")
-            if od is not None:
-                pos = state.position.get("HYDROGEL_PACK", 0)
-                result["HYDROGEL_PACK"] = self.trade_hydrogel(od, pos)
-        else:
-            if "HYDROGEL_PACK" in state.order_depths:
-                result["HYDROGEL_PACK"] = []
-
-        # ── VELVETFRUIT_EXTRACT ───────────────────────────
         if TRADE_UNDERLYING:
             od = state.order_depths.get(UNDERLYING)
             if od is not None:
@@ -100,7 +105,6 @@ class Trader:
                     UNDERLYING, od, pos, POSITION_LIMITS[UNDERLYING], trader_data
                 )
 
-        # ── VEV vouchers ──────────────────────────────────
         if TRADE_OPTIONS:
             spot = self.get_mid_price(state.order_depths.get(UNDERLYING))
             if spot is not None:
@@ -119,53 +123,10 @@ class Trader:
             if product in state.order_depths and product not in result:
                 result[product] = []
 
+        if "HYDROGEL_PACK" in state.order_depths:
+            result["HYDROGEL_PACK"] = []
+
         return result, 0, json.dumps(trader_data, separators=(",", ":"))
-
-    # ─────────────────────────────────────────────────────
-    def trade_hydrogel(self, od: OrderDepth, position: int) -> List[Order]:
-        """
-        Static-anchor passive MM around HG_FAIR (9991).
-
-        1. TAKE: only on extreme dislocations (> 26 from fair).
-        2. PASSIVE: post at fair ± 8 with inventory skew.
-        """
-        orders: List[Order] = []
-
-        best_bid = max(od.buy_orders)  if od.buy_orders  else None
-        best_ask = min(od.sell_orders) if od.sell_orders else None
-        if best_bid is None or best_ask is None:
-            return orders
-
-        buy_room  = POSITION_LIMITS["HYDROGEL_PACK"] - position
-        sell_room = POSITION_LIMITS["HYDROGEL_PACK"] + position
-
-        # ── Take ─────────────────────────────────────────
-        if best_ask < HG_FAIR - HG_TAKE_EDGE and buy_room > 0:
-            qty = min(HG_TAKE_SIZE, buy_room, abs(od.sell_orders[best_ask]))
-            if qty > 0:
-                orders.append(Order("HYDROGEL_PACK", best_ask, qty))
-                position += qty
-                buy_room -= qty
-
-        if best_bid > HG_FAIR + HG_TAKE_EDGE and sell_room > 0:
-            qty = min(HG_TAKE_SIZE, sell_room, od.buy_orders[best_bid])
-            if qty > 0:
-                orders.append(Order("HYDROGEL_PACK", best_bid, -qty))
-                position  -= qty
-                sell_room -= qty
-
-        # ── Passive ──────────────────────────────────────
-        skew    = position // HG_SKEW_DIV
-        bid_px  = int(HG_FAIR - HG_POST_EDGE - skew)
-        ask_px  = int(HG_FAIR + HG_POST_EDGE - skew)
-
-        if buy_room > 0 and bid_px < best_ask:
-            orders.append(Order("HYDROGEL_PACK", bid_px, min(HG_POST_SIZE, buy_room)))
-
-        if sell_room > 0 and ask_px > best_bid:
-            orders.append(Order("HYDROGEL_PACK", ask_px, -min(HG_POST_SIZE, sell_room)))
-
-        return orders
 
     # ─────────────────────────────────────────────────────
     def trade_delta_one(
@@ -185,23 +146,31 @@ class Trader:
 
         mid = (best_bid + best_ask) / 2.0
 
+        # ── Step 1: EMA (slow drift tracker) ─────────────
         ema_key = f"{product}_ema"
         ema = (1 - VE_EMA_ALPHA) * trader_data.get(ema_key, mid) + VE_EMA_ALPHA * mid
         trader_data[ema_key] = ema
 
+        # ── Step 2: anchor blend ──────────────────────────
+        #   Pulls fair toward the long-run mean.
+        #   EMA handles short-term drift; anchor prevents runaway.
         blended = VE_ANCHOR_WEIGHT * VE_ANCHOR + (1 - VE_ANCHOR_WEIGHT) * ema
 
+        # ── Step 3: microprice imbalance shift ────────────
+        #   If buy-side depth >> sell-side depth, price likely
+        #   to tick up → shift fair slightly higher, and vice versa.
         bid_vol = float(od.buy_orders[best_bid])
         ask_vol = float(abs(od.sell_orders[best_ask]))
         total   = bid_vol + ask_vol
         if total > 0:
-            imbalance = (bid_vol - ask_vol) / total
+            imbalance = (bid_vol - ask_vol) / total   # [-1, 1]
             shift = max(-VE_IMBALANCE_CAP, min(VE_IMBALANCE_CAP, VE_IMBALANCE_K * imbalance))
         else:
             shift = 0.0
 
         fair = blended + shift
 
+        # ── Step 4: take orders (cross spread on big edges) ─
         buy_room  = limit - position
         sell_room = limit + position
 
@@ -219,9 +188,13 @@ class Trader:
                 sell_room -= qty
                 position  -= qty
 
-        skew   = position // 34
-        bid_px = int(fair - VE_POST_EDGE - skew)
-        ask_px = int(fair + VE_POST_EDGE - skew)
+        # ── Step 5: passive quotes (earn the spread) ──────
+        #   Post just inside fair ± POST_EDGE, but never cross
+        #   the existing best bid/ask (we'd get immediately filled
+        #   and pay the spread instead of earning it).
+        skew    = position // 34          # nudge quotes away from inventory
+        bid_px  = int(fair - VE_POST_EDGE - skew)
+        ask_px  = int(fair + VE_POST_EDGE - skew)
 
         if buy_room > 0 and bid_px < best_ask:
             orders.append(Order(product, bid_px, min(VE_POST_SIZE, buy_room)))
