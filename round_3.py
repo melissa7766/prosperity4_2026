@@ -20,12 +20,17 @@ POSITION_LIMITS: Dict[str, int] = {
 }
 
 TRADE_UNDERLYING = True
-TRADE_OPTIONS = False
+TRADE_OPTIONS = True
 TRADE_HYDROGEL = True
 
 UNDERLYING = "VELVETFRUIT_EXTRACT"
 
-ACTIVE_STRIKES = [5000, 5100, 5200, 5300, 5400, 5500]
+# Restrict to strikes near spot — wings (4000/4500/6000/6500) have illiquid
+# books and corrupt the smile fit with noise.
+# Use liquid near-spot strikes for fitting, but only trade the safer core.
+# 5400/5500 are low-price/noisy; passive fills there caused bleed.
+FIT_STRIKES = [5000, 5100, 5200, 5300, 5400, 5500]
+TRADED_OPTION_STRIKES = [5000, 5100, 5200, 5300]
 
 
 # ── HYDROGEL_PACK (unchanged) ─────────────────────────────
@@ -35,10 +40,9 @@ HG_TAKE_EDGE = 26
 HG_TAKE_SIZE = 20
 HG_POST_EDGE = 8
 HG_POST_SIZE = 20
-HG_SKEW_DIV = 40
+HG_SKEW_DIV = 25
 
 # ── HYDROGEL momentum overlay ─────────────────────────────
-# Keeps HG_FAIR as the anchor, but nudges fair when recent mids trend.
 HG_MOM_ALPHA = 0.12
 HG_MOM_K = 0.45
 HG_MOM_CAP = 6
@@ -62,18 +66,39 @@ VE_POST_SIZE = 20
 
 # ── Options ───────────────────────────────────────────────
 
-OPTION_TAKE_SIZE = 10        # size when crossing
-OPTION_POST_SIZE = 10        # size of resting passive quotes
-OPTION_MAX_POSITION = 60     # per-strike soft cap
+OPTION_TAKE_SIZE = 8
+OPTION_POST_SIZE = 5
+OPTION_MAX_POSITION = 35
 
-OPTION_TAKE_EDGE = 0.5       # cross when |market_px - smile_px| > this
-OPTION_POST_EDGE = 0.5       # min distance from fair for resting quotes
-OPTION_SKEW_DIV = 30         # inventory skew divisor on resting quotes
+# Asymmetric edges — bias toward fading vol (sell options).
+# Need real edge. The old values were too tight and got picked off.
+OPTION_BUY_EDGE  = 2.0
+OPTION_SELL_EDGE = 1.5
+OPTION_POST_BUY_EDGE  = 2.0
+OPTION_POST_SELL_EDGE = 2.0
 
-FALLBACK_SIGMA = 0.017       # used when smile fit fails (data: 0.016-0.019)
+OPTION_SKEW_DIV = 30
+
+# Close-out: when more than half the cap, take favorable prices to lock gains.
+OPTION_CLOSE_THRESHOLD = OPTION_MAX_POSITION // 2
+OPTION_CLOSE_EDGE = 0.0      # only close when market is at fair OR BETTER
+                             # (was 0.5 — paid spread to close, ate the edge)
+
+# Skip strikes where spread is too wide vs price.  On 5500 (~18% spread)
+# round-trips eat the edge.  Quote passively only on those — never take.
+OPTION_MAX_SPREAD_PCT = 0.08  # 8% of mid
+OPTION_MIN_PRICE = 20         # also skip taking if option price < this
+
+# Fallback smile when fit fails — calibrated from 3 days of historical data.
+# IV ≈ A * m^2 + C  where m = log(K/S)/sqrt(T)
+# More realistic fallback from the 3 historical days.
+# Old C=0.017 overvalued options and made the bot buy noisy wings.
+FALLBACK_SMILE_A = 0.55
+FALLBACK_SMILE_C = 0.0137
+
 DAY_LENGTH = 1_000_000.0
 STARTING_TTE = 5.0
-OPTION_ENTRY_CUTOFF = 850_000
+OPTION_ENTRY_CUTOFF = 800_000
 
 
 # ── Black-Scholes helpers ─────────────────────────────────
@@ -115,35 +140,64 @@ def implied_vol(target: float, spot: float, strike: float, tte: float) -> Option
 
 
 def fit_smile(xs: List[float], ys: List[float]) -> Optional[Tuple[float, float, float]]:
-    """LS quadratic fit y = a*x^2 + b*x + c.  Needs >= 3 points."""
+    """
+    Fit iv = a*m^2 + b*m + c.
+    Uses a tiny 3x3 least-squares solve and rejects unstable fits.
+    The old symmetric fit often produced negative curvature, which made
+    5400 look cheap and 5200/5300 look too expensive.
+    """
     n = len(xs)
-    if n < 3:
+    if n < 4:
         return None
+
+    s0 = float(n)
     s1 = sum(xs)
     s2 = sum(x * x for x in xs)
     s3 = sum(x ** 3 for x in xs)
     s4 = sum(x ** 4 for x in xs)
-    t0 = sum(ys)
-    t1 = sum(x * y for x, y in zip(xs, ys))
-    t2 = sum(x * x * y for x, y in zip(xs, ys))
-    M = [[s4, s3, s2], [s3, s2, s1], [s2, s1, float(n)]]
-    rhs = [t2, t1, t0]
+    y0 = sum(ys)
+    y1 = sum(x * y for x, y in zip(xs, ys))
+    y2 = sum(x * x * y for x, y in zip(xs, ys))
 
-    def det3(A: List[List[float]]) -> float:
-        return (A[0][0] * (A[1][1] * A[2][2] - A[1][2] * A[2][1])
-                - A[0][1] * (A[1][0] * A[2][2] - A[1][2] * A[2][0])
-                + A[0][2] * (A[1][0] * A[2][1] - A[1][1] * A[2][0]))
+    # Solve normal equations for [a, b, c].
+    A = [[s4, s3, s2], [s3, s2, s1], [s2, s1, s0]]
+    bvec = [y2, y1, y0]
 
-    D = det3(M)
-    if abs(D) < 1e-12:
-        return None
-    out = []
-    for j in range(3):
-        Mj = [row[:] for row in M]
+    try:
+        # Manual Gaussian elimination to avoid importing numpy.
         for i in range(3):
-            Mj[i][j] = rhs[i]
-        out.append(det3(Mj) / D)
-    return out[0], out[1], out[2]
+            pivot = i
+            for r in range(i + 1, 3):
+                if abs(A[r][i]) > abs(A[pivot][i]):
+                    pivot = r
+            if abs(A[pivot][i]) < 1e-12:
+                return None
+            if pivot != i:
+                A[i], A[pivot] = A[pivot], A[i]
+                bvec[i], bvec[pivot] = bvec[pivot], bvec[i]
+            div = A[i][i]
+            for j in range(i, 3):
+                A[i][j] /= div
+            bvec[i] /= div
+            for r in range(3):
+                if r == i:
+                    continue
+                mult = A[r][i]
+                for j in range(i, 3):
+                    A[r][j] -= mult * A[i][j]
+                bvec[r] -= mult * bvec[i]
+        a, b, c = bvec[0], bvec[1], bvec[2]
+    except Exception:
+        return None
+
+    # Reject noisy/overfit smiles. Fallback is safer than a bad fit.
+    if a < 0.0 or a > 2.5:
+        return None
+    if b < -0.06 or b > 0.06:
+        return None
+    if c < 0.0125 or c > 0.0150:
+        return None
+    return a, b, c
 
 
 class Trader:
@@ -178,10 +232,10 @@ class Trader:
                 tte = max(0.01, STARTING_TTE - state.timestamp / DAY_LENGTH)
                 sqrt_t = sqrt(tte)
 
-                # Pass 1: invert IV from each strike's mid.
+                # Pass 1: invert IV from each ACTIVE strike's mid.
                 xs: List[float] = []
                 ys: List[float] = []
-                for strike in ACTIVE_STRIKES:
+                for strike in FIT_STRIKES:
                     od = state.order_depths.get(f"VEV_{strike}")
                     mid = self.get_mid_price(od)
                     if mid is None:
@@ -189,25 +243,27 @@ class Trader:
                     iv = implied_vol(mid, spot, strike, tte)
                     if iv is None:
                         continue
-                    xs.append(log(strike / spot) / sqrt_t)  # moneyness
+                    xs.append(log(strike / spot) / sqrt_t)
                     ys.append(iv)
 
                 fit = fit_smile(xs, ys)
 
                 # Pass 2: trade each strike against fitted IV.
-                for strike in ACTIVE_STRIKES:
+                for strike in TRADED_OPTION_STRIKES:
                     product = f"VEV_{strike}"
                     od = state.order_depths.get(product)
                     if od is None:
                         result[product] = []
                         continue
 
+                    m = log(strike / spot) / sqrt_t
                     if fit is not None:
-                        m = log(strike / spot) / sqrt_t
                         a, b, c = fit
-                        sigma_use = max(0.001, min(0.5, a * m * m + b * m + c))
+                        sigma_use = a * m * m + b * m + c
                     else:
-                        sigma_use = FALLBACK_SIGMA
+                        # Conservative fallback smile (not flat sigma).
+                        sigma_use = FALLBACK_SMILE_A * m * m + FALLBACK_SMILE_C
+                    sigma_use = max(0.001, min(0.5, sigma_use))
 
                     pos = state.position.get(product, 0)
                     result[product] = self.trade_option(
@@ -233,9 +289,6 @@ class Trader:
         buy_room = POSITION_LIMITS["HYDROGEL_PACK"] - position
         sell_room = POSITION_LIMITS["HYDROGEL_PACK"] + position
 
-        # ── Momentum overlay ──────────────────────────────
-        # mid > EMA means short-term upward momentum.
-        # mid < EMA means short-term downward momentum.
         mid = (best_bid + best_ask) / 2.0
         old_ema = trader_data.get(HG_MOM_KEY, mid)
         ema = (1.0 - HG_MOM_ALPHA) * old_ema + HG_MOM_ALPHA * mid
@@ -245,11 +298,8 @@ class Trader:
         mom_shift = max(-HG_MOM_CAP, min(HG_MOM_CAP, HG_MOM_K * raw_momentum))
         fair = HG_FAIR + mom_shift
 
-        # With upward momentum, buy slightly more aggressively.
-        # With downward momentum, sell slightly more aggressively.
         buy_take_edge = HG_TAKE_EDGE - max(0.0, mom_shift) * HG_MOM_TAKE_BOOST
         sell_take_edge = HG_TAKE_EDGE + min(0.0, mom_shift) * HG_MOM_TAKE_BOOST
-
         buy_take_edge = max(12.0, buy_take_edge)
         sell_take_edge = max(12.0, sell_take_edge)
 
@@ -351,7 +401,7 @@ class Trader:
         self, product: str, strike: int, od: OrderDepth, position: int,
         spot: float, tte: float, sigma: float, timestamp: int,
     ) -> List[Order]:
-        """Take + post against a smile-fitted fair value."""
+        """Take + post against a smile-fitted fair value, with close-out."""
         orders: List[Order] = []
         best_bid = self.best_bid(od)
         best_ask = self.best_ask(od)
@@ -381,43 +431,73 @@ class Trader:
                     orders.append(Order(product, best_ask, qty))
             return orders
 
+        # Spread guard — skip taking/closing on options where spread eats edge.
+        # Still post passive quotes (they capture the spread when filled).
+        spread = best_ask - best_bid
+        mid = (best_ask + best_bid) / 2.0
+        spread_too_wide = (mid > 0 and spread / mid > OPTION_MAX_SPREAD_PCT) \
+                          or (mid < OPTION_MIN_PRICE)
+
         # ── 1. AGGRESSIVE TAKE on mispricings ─────────────
-        if best_ask < fair - OPTION_TAKE_EDGE and buy_room > 0:
-            qty = min(OPTION_TAKE_SIZE, buy_room, abs(od.sell_orders[best_ask]))
-            if qty > 0:
-                orders.append(Order(product, best_ask, qty))
-                position += qty
-                buy_room -= qty
+        if not spread_too_wide:
+            if best_ask < fair - OPTION_BUY_EDGE and buy_room > 0:
+                qty = min(OPTION_TAKE_SIZE, buy_room, abs(od.sell_orders[best_ask]))
+                if qty > 0:
+                    orders.append(Order(product, best_ask, qty))
+                    position += qty
+                    buy_room -= qty
 
-        if best_bid > fair + OPTION_TAKE_EDGE and sell_room > 0:
-            qty = min(OPTION_TAKE_SIZE, sell_room, od.buy_orders[best_bid])
-            if qty > 0:
-                orders.append(Order(product, best_bid, -qty))
-                position -= qty
-                sell_room -= qty
+            if best_bid > fair + OPTION_SELL_EDGE and sell_room > 0:
+                qty = min(OPTION_TAKE_SIZE, sell_room, od.buy_orders[best_bid])
+                if qty > 0:
+                    orders.append(Order(product, best_bid, -qty))
+                    position -= qty
+                    sell_room -= qty
 
-        # ── 2. PASSIVE QUOTES — join or improve the inside ─
-        skew = position / OPTION_SKEW_DIV  # float skew, applied to fair
+        # ── 1b. CLOSE-OUT to lock gains ───────────────────
+        # Without this, positions drift to cap and bleed theta while the
+        # smile residual reverts.  When more than half the cap and market
+        # is at or near fair, take the favorable side.
+        # Skip close-out crossing the spread when spread is wide — would
+        # cost more than the position is worth.  Let passive quotes do it.
+        if not spread_too_wide:
+            if position < -OPTION_CLOSE_THRESHOLD and best_ask <= fair + OPTION_CLOSE_EDGE:
+                qty = min(-position, OPTION_TAKE_SIZE,
+                          abs(od.sell_orders[best_ask]), buy_room)
+                if qty > 0:
+                    orders.append(Order(product, best_ask, qty))
+                    position += qty
+                    buy_room -= qty
+
+            if position > OPTION_CLOSE_THRESHOLD and best_bid >= fair - OPTION_CLOSE_EDGE:
+                qty = min(position, OPTION_TAKE_SIZE,
+                          od.buy_orders[best_bid], sell_room)
+                if qty > 0:
+                    orders.append(Order(product, best_bid, -qty))
+                    position -= qty
+                    sell_room -= qty
+
+        # ── 2. PASSIVE QUOTES ─────────────────────────────
+        # Do NOT quote both sides just because we have a fair value.
+        # Only post when the current book is already mispriced by enough edge.
+        # This reduces adverse-selection inventory in near-ATM vouchers.
+        if spread_too_wide:
+            return orders
+
+        skew = position / OPTION_SKEW_DIV
         adj_fair = fair - skew
 
-        # Bid: target one tick inside the spread, but never above fair-edge
-        if buy_room > 0:
-            target_bid = floor(adj_fair - OPTION_POST_EDGE)
-            # If we can improve (best_bid + 1 still leaves edge), do so
-            improve = best_bid + 1
-            if improve < adj_fair - OPTION_POST_EDGE and improve < best_ask:
-                target_bid = improve
+        # Join/improve the bid only if buying still has edge.
+        if buy_room > 0 and best_bid < adj_fair - OPTION_POST_BUY_EDGE:
+            target_bid = min(best_bid + 1, floor(adj_fair - OPTION_POST_BUY_EDGE))
             if target_bid >= 0 and target_bid < best_ask:
                 qty = min(OPTION_POST_SIZE, buy_room)
                 if qty > 0:
                     orders.append(Order(product, target_bid, qty))
 
-        # Ask: symmetric
-        if sell_room > 0:
-            target_ask = ceil(adj_fair + OPTION_POST_EDGE)
-            improve = best_ask - 1
-            if improve > adj_fair + OPTION_POST_EDGE and improve > best_bid:
-                target_ask = improve
+        # Join/improve the ask only if selling still has edge.
+        if sell_room > 0 and best_ask > adj_fair + OPTION_POST_SELL_EDGE:
+            target_ask = max(best_ask - 1, ceil(adj_fair + OPTION_POST_SELL_EDGE))
             if target_ask > best_bid:
                 qty = min(OPTION_POST_SIZE, sell_room)
                 if qty > 0:
