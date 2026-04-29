@@ -78,34 +78,40 @@ class Trader:
                                 "min_spread": 6, "max_pos": 10},
     }
 
-
+    # Skip set: chronic bleeders from prior backtests where no robust directional
+    # override clearly helps. Pebbles stay hard-disabled by request.
     SKIP = {
-        "PANEL_1X2",
         # Ranked losers from the latest backtest (final pnl <= -1500 with drift driving it):
         "GALAXY_SOUNDS_PLANETARY_RINGS",   # -6247.7, drift -778
-        "GALAXY_SOUNDS_DARK_MATTER",       # -4370.4, drift -407
-        "OXYGEN_SHAKE_MORNING_BREATH",     # -3180.1
         "OXYGEN_SHAKE_MINT",               # -2029.8
         "SLEEP_POD_LAMB_WOOL",             # -1950.3
-        "PANEL_2X2",                       # -1751.3
         "PEBBLES_XS",
         "PEBBLES_S",
         "PEBBLES_M",
         "PEBBLES_L",
         "PEBBLES_XL",
 
-
-        "GALAXY_SOUNDS_SOLAR_WINDS",
-        "MICROCHIP_RECTANGLE",
+        # User-requested removals / hard-disabled products:
         "OXYGEN_SHAKE_EVENING_BREATH",
-        "SLEEP_POD_NYLON",
         "SLEEP_POD_POLYESTER",
-        "SNACKPACK_RASPBERRY",
-        "TRANSLATOR_SPACE_GRAY",
-        "UV_VISOR_AMBER",
         "UV_VISOR_MAGENTA",
         "UV_VISOR_YELLOW",
-        "ROBOT_VACUUMING"
+        "UV_VISOR_AMBER",
+        "ROBOT_VACUUMING",
+        "PANEL_2X2",
+
+        # Disabled after IMC sim/backtester comparison: these created the main
+        # loss tail in the official sim or had unstable backtester day profiles.
+        "GALAXY_SOUNDS_BLACK_HOLES",
+        "MICROCHIP_TRIANGLE",
+        "OXYGEN_SHAKE_GARLIC",
+        "PANEL_4X4",
+        "ROBOT_LAUNDRY",
+        "TRANSLATOR_ASTRO_BLACK",
+        "TRANSLATOR_GRAPHITE_MIST",
+        "TRANSLATOR_SPACE_GRAY",
+        "UV_VISOR_ORANGE",
+        "UV_VISOR_RED",
     }
 
     # PEBBLES basket fair: XS+S+M+L+XL ≈ 50_000.  Std ≈ 2.5.
@@ -123,13 +129,83 @@ class Trader:
     EMA_FAST_HL = 20
     EMA_SLOW_HL = 100
 
-    # Directional robot overrides. direction=-1 means fade the EMA spread:
+    # Directional overrides. direction=-1 means fade the EMA spread:
     # short when fast EMA is above slow EMA, long when it is below.
-    ROBOT_TREND: Dict[str, Dict[str, float]] = {
+    DIRECTIONAL_TREND: Dict[str, Dict[str, float]] = {
+        "GALAXY_SOUNDS_DARK_MATTER":
+            {"fast": 50, "slow": 800, "threshold": 21, "exit": 10.5,
+             "cap": 10, "direction": -1},
+        "GALAXY_SOUNDS_SOLAR_FLAMES":
+            {"fast": 50, "slow": 800, "threshold": 180, "exit": 90,
+             "cap": 10, "direction": 1},
+        "GALAXY_SOUNDS_SOLAR_WINDS":
+            {"fast": 120, "slow": 500, "threshold": 233, "exit": 116.5,
+             "cap": 10, "direction": -1},
+        "SLEEP_POD_COTTON":
+            {"fast": 20, "slow": 200, "threshold": 120, "exit": 60,
+             "cap": 10, "direction": 1},
+        "SLEEP_POD_SUEDE":
+            {"fast": 10, "slow": 100, "threshold": 120, "exit": 60,
+             "cap": 10, "direction": -1},
+        "MICROCHIP_RECTANGLE":
+            {"fast": 120, "slow": 200, "threshold": 3, "exit": 1.5,
+             "cap": 10, "direction": -1},
+        "MICROCHIP_CIRCLE":
+            {"fast": 120, "slow": 500, "threshold": 8, "exit": 4,
+             "cap": 10, "direction": 1},
+        "MICROCHIP_OVAL":
+            {"fast": 5, "slow": 800, "threshold": 144, "exit": 72,
+             "cap": 10, "direction": 1},
+        "MICROCHIP_SQUARE":
+            {"fast": 20, "slow": 100, "threshold": 144, "exit": 72,
+             "cap": 10, "direction": 1},
+        "ROBOT_MOPPING":
+            {"fast": 20, "slow": 200, "threshold": 34, "exit": 17,
+             "cap": 10, "direction": 1},
+        "ROBOT_IRONING":
+            {"fast": 5, "slow": 800, "threshold": 180, "exit": 90,
+             "cap": 10, "direction": 1},
+        "TRANSLATOR_ECLIPSE_CHARCOAL":
+            {"fast": 50, "slow": 800, "threshold": 377, "exit": 188.5,
+             "cap": 10, "direction": -1},
+        "TRANSLATOR_VOID_BLUE":
+            {"fast": 5, "slow": 800, "threshold": 233, "exit": 116.5,
+             "cap": 10, "direction": -1},
+        "PANEL_1X4":
+            {"fast": 10, "slow": 100, "threshold": 34, "exit": 17,
+             "cap": 10, "direction": 1},
+        "PANEL_2X4":
+            {"fast": 120, "slow": 800, "threshold": 144, "exit": 72,
+             "cap": 10, "direction": -1},
+        "OXYGEN_SHAKE_MORNING_BREATH":
+            {"fast": 80, "slow": 300, "threshold": 1, "exit": 0.5,
+             "cap": 10, "direction": 1},
+        "PANEL_1X2":
+            {"fast": 120, "slow": 500, "threshold": 144, "exit": 72,
+             "cap": 10, "direction": -1},
         "ROBOT_DISHES":    {"fast": 120, "slow": 500, "threshold": 89, "exit": 44.5,
                             "cap": 10, "direction": -1},
-        "ROBOT_VACUUMING": {"fast": 120, "slow": 200, "threshold": 1, "exit": 0.5,
-                            "cap": 10, "direction": -1},
+        "SLEEP_POD_NYLON":
+            {"fast": 120, "slow": 800, "threshold": 2, "exit": 1,
+             "cap": 10, "direction": -1},
+        "SNACKPACK_RASPBERRY":
+            {"fast": 5, "slow": 800, "threshold": 180, "exit": 90,
+             "cap": 10, "direction": -1},
+        "SNACKPACK_CHOCOLATE":
+            {"fast": 120, "slow": 800, "threshold": 1, "exit": 0.5,
+             "cap": 10, "direction": -1},
+        "SNACKPACK_VANILLA":
+            {"fast": 120, "slow": 800, "threshold": 5, "exit": 2.5,
+             "cap": 10, "direction": -1},
+        "SNACKPACK_PISTACHIO":
+            {"fast": 120, "slow": 800, "threshold": 8, "exit": 4,
+             "cap": 10, "direction": -1},
+        "SNACKPACK_STRAWBERRY":
+            {"fast": 120, "slow": 200, "threshold": 13, "exit": 6.5,
+             "cap": 10, "direction": -1},
+        "TRANSLATOR_SPACE_GRAY":
+            {"fast": 20, "slow": 100, "threshold": 34, "exit": 17,
+             "cap": 10, "direction": 1},
     }
 
     # --------- helpers ---------
@@ -289,7 +365,7 @@ class Trader:
 
         return orders
 
-    def _robot_trend_trade(
+    def _directional_trend_trade(
         self,
         product: str,
         depth: OrderDepth,
@@ -373,9 +449,9 @@ class Trader:
                     result[product] = []
                     continue
 
-                if product in self.ROBOT_TREND:
-                    result[product] = self._robot_trend_trade(
-                        product, depth, pos, self.ROBOT_TREND[product], memory
+                if product in self.DIRECTIONAL_TREND:
+                    result[product] = self._directional_trend_trade(
+                        product, depth, pos, self.DIRECTIONAL_TREND[product], memory
                     )
                     continue
 
